@@ -1,84 +1,74 @@
 # coding:UTF-8
-# Version: V1.0.1
+# Version: V1.5.1
 import serial
+
+buf_length = 11
+
+RxBuff = [0]*buf_length
 
 ACCData = [0.0]*8
 GYROData = [0.0]*8
 AngleData = [0.0]*8
 FrameState = 0  # What is the state of the judgment
-Bytenum = 0  # Read the number of digits in this paragraph
 CheckSum = 0  # Sum check bit
 
-a = [0.0]*3
-w = [0.0]*3
+start = 0 #帧头开始的标志
+data_length = 0 #根据协议的文档长度为11 eg:55 51 31 FF 53 02 CD 07 12 0A 1B
+
+acc = [0.0]*3
+gyro = [0.0]*3
 Angle = [0.0]*3
 
+def GetDataDeal(list_buf):
+    global acc,gyro,Angle
+
+    if(list_buf[buf_length - 1] != CheckSum): #校验码不正确
+        return
+        
+    if(list_buf[1] == 0x51): #加速度输出
+        for i in range(6): 
+            ACCData[i] = list_buf[2+i] #有效数据赋值
+        acc = get_acc(ACCData)
+
+    elif(list_buf[1] == 0x52): #角速度输出
+        for i in range(6): 
+            GYROData[i] = list_buf[2+i] #有效数据赋值
+        gyro = get_gyro(GYROData)
+
+    elif(list_buf[1] == 0x53): #姿态角度输出
+        for i in range(6): 
+            AngleData[i] = list_buf[2+i] #有效数据赋值
+        Angle = get_angle(AngleData)
+
+    print("acc:%10.3f %10.3f %10.3f \n" % (acc[0],acc[1],acc[2]))
+    print("gyro:%10.3f %10.3f %10.3f \n" % (gyro[0],gyro[1],gyro[2]))
+    print("angle:%10.3f %10.3f %10.3f \n" % (Angle[0],Angle[1],Angle[2]))
+
+    
+    
 
 def DueData(inputdata):  # New core procedures, read the data partition, each read to the corresponding array 
-    global FrameState    # Declare global variables
-    global Bytenum
+    global start
     global CheckSum
-    global acc
-    global gyro
-    global Angle
-    for data in inputdata:  # Traversal the input data
-        if FrameState == 0:  # When the state is not determined, enter the following judgment
-            if data == 0x55 and Bytenum == 0:  # When 0x55 is the first digit, start reading data and increment bytenum
-                CheckSum = data
-                Bytenum = 1
-                continue
-            elif data == 0x51 and Bytenum == 1:  # Change the frame if byte is not 0 and 0x51 is identified
-                CheckSum += data
-                FrameState = 1
-                Bytenum = 2
-            elif data == 0x52 and Bytenum == 1:
-                CheckSum += data
-                FrameState = 2
-                Bytenum = 2
-            elif data == 0x53 and Bytenum == 1:
-                CheckSum += data
-                FrameState = 3
-                Bytenum = 2
-        elif FrameState == 1:  # acc
+    global data_length
+    # print(type(inputdata))
+    if inputdata == 0x55 and start == 0:
+        start = 1
+        data_length = 11
+        CheckSum = 0
+        #清0
+        for i in range(11):
+            RxBuff[i] = 0
 
-            if Bytenum < 10:            # Read 8 data
-                ACCData[Bytenum-2] = data  # Starting from 0
-                CheckSum += data
-                Bytenum += 1
-            else:
-                if data == (CheckSum & 0xff):  # verify check bit
-                    acc = get_acc(ACCData)
-                CheckSum = 0  # Each data is zeroed and a new circular judgment is made
-                Bytenum = 0
-                FrameState = 0
-        elif FrameState == 2:  # gyro
-
-            if Bytenum < 10:
-                GYROData[Bytenum-2] = data
-                CheckSum += data
-                Bytenum += 1
-            else:
-                if data == (CheckSum & 0xff):
-                    gyro = get_gyro(GYROData)
-                CheckSum = 0
-                Bytenum = 0
-                FrameState = 0
-        elif FrameState == 3:  # angle
-
-            if Bytenum < 10:
-                AngleData[Bytenum-2] = data
-                CheckSum += data
-                Bytenum += 1
-            else:
-                if data == (CheckSum & 0xff):
-                    Angle = get_angle(AngleData)
-                    result = acc+gyro+Angle
-                    print(
-                        "acc:%10.3f %10.3f %10.3f \ngyro:%10.3f %10.3f %10.3f \nangle:%10.3f %10.3f %10.3f" % result)
-                CheckSum = 0
-                Bytenum = 0
-                FrameState = 0
-
+    if start == 1:
+        CheckSum += inputdata #校验码计算 会把校验位加上
+        RxBuff[buf_length-data_length] = inputdata #保存数据
+        data_length = data_length - 1 #长度减一
+        if data_length == 0: #接收到完整的数据
+            CheckSum = (CheckSum-inputdata) & 0xff 
+            start = 0 #清0
+            GetDataDeal(RxBuff)  #处理数据
+        
 
 def get_acc(datahex):
     axl = datahex[0]
@@ -139,12 +129,15 @@ def get_angle(datahex):
         angle_z -= 2 * k_angle
     return angle_x, angle_y, angle_z
 
-
 if __name__ == '__main__':
-    port = '/dev/ttyUSB0' # USB serial port 
+    port = '/dev/ttyUSB0' # USB serial port linux
+    #port = 'COM12' # USB serial port  windowns
     baud = 9600   # Same baud rate as the INERTIAL navigation module
     ser = serial.Serial(port, baud, timeout=0.5)
     print("Serial is Opened:", ser.is_open)
     while(1):
-        datahex = ser.read(33)
-        DueData(datahex)
+        RXdata = ser.read(1)#一个一个读
+        RXdata = int(RXdata.hex(),16) #转成16进制显示
+        DueData(RXdata)
+        
+
